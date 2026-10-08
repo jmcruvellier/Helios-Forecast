@@ -60,6 +60,17 @@ WEATHER_HOURLY = (
 # The ensemble spread call needs only the aggregate cover to measure model disagreement.
 WEATHER_SPREAD_HOURLY = "cloud_cover"
 
+# Jeu de variables haute résolution (pas de 15 min) pour le court terme. Servies par le même
+# endpoint ; les modèles sans sortie 15-min renvoient des nulls qui sortent de la médiane.
+# Best-effort : en cas d'échec, la prévision retombe sur l'interpolation horaire d'origine.
+WEATHER_MINUTELY_15 = (
+    "shortwave_radiation_instant,direct_radiation_instant,diffuse_radiation_instant,cloud_cover"
+)
+# Fenêtre du fetch 15 min : 1 jour passé + 2 jours de prévision couvrent « aujourd'hui + demain »
+# en heure locale quel que soit le fuseau (l'API rend des jours UTC entiers).
+_M15_PAST_DAYS = 1
+_M15_FORECAST_DAYS = 2
+
 # Wider ensemble, used only for the cross-model cloud spread (a forecast-uncertainty signal). The
 # weather VALUES come from pick_models_for_location; this call runs alongside and we read the per-hour
 # disagreement across these models. Open-Meteo suffixes each variable key with the model name. A broad,
@@ -149,6 +160,14 @@ class WeatherSeries:
     # models agreeing perfectly, and the reliability index reads this as agreement.
     cloud_spread: list[Optional[float]] = field(default_factory=list)
 
+    # Échantillons fins au pas de 15 minutes (appel best-effort séparé). Vide quand l'endpoint
+    # n'a rien servi : build_forecast_series garde alors l'interpolation horaire partout.
+    m15_times: list[datetime] = field(default_factory=list)
+    m15_shortwave: list[Optional[float]] = field(default_factory=list)
+    m15_direct: list[Optional[float]] = field(default_factory=list)
+    m15_diffuse: list[Optional[float]] = field(default_factory=list)
+    m15_cloud: list[Optional[float]] = field(default_factory=list)
+
 
 def build_weather_url(
     lat: float, lon: float, *, past_days: int = 0, forecast_days: int = 7, ensemble: bool = False
@@ -172,6 +191,19 @@ def build_weather_url(
         f"&hourly={hourly}"
         f"&models={models}"
         f"&past_days={past_days}&forecast_days={forecast_days}&timezone=UTC"
+    )
+
+
+def build_minutely15_url(lat: float, lon: float) -> str:
+    """URL de la requête 15 minutes sur les modèles du picker (médiane comme l'horaire)."""
+    models = ",".join(pick_models_for_location(lat, lon))
+    return (
+        f"{_BASE_URL}"
+        f"?latitude={lat:.4f}"
+        f"&longitude={lon:.4f}"
+        f"&minutely_15={WEATHER_MINUTELY_15}"
+        f"&models={models}"
+        f"&past_days={_M15_PAST_DAYS}&forecast_days={_M15_FORECAST_DAYS}&timezone=UTC"
     )
 
 
@@ -294,6 +326,40 @@ def parse_cloud_spread(payload: dict[str, Any]) -> tuple[list[datetime], list[fl
     return parse_times(time_strs), spread
 
 
+def parse_minutely15(payload: dict[str, Any]) -> Optional[tuple]:
+    """(times, shortwave, direct, diffuse, cloud) au pas de 15 min, médiane des modèles du picker.
+    None quand la réponse n'a pas de section minutely_15 exploitable."""
+    m15 = payload.get("minutely_15") or {}
+    time_strs = m15.get("time") or []
+    if not time_strs:
+        return None
+    n = len(time_strs)
+
+    def fuse(base: str) -> list:
+        arrays = _model_arrays(m15, base)
+        return [_median(_finite_at(arrays, i)) for i in range(n)]
+
+    shortwave = fuse("shortwave_radiation_instant")
+    if not any(v is not None for v in shortwave):
+        return None
+    return (
+        parse_times(time_strs),
+        shortwave,
+        fuse("direct_radiation_instant"),
+        fuse("diffuse_radiation_instant"),
+        fuse("cloud_cover"),
+    )
+
+
+async def _minutely15(session: ClientSession, url: str) -> Optional[tuple]:
+    """Fetch 15 min best-effort : tout échec se lit « pas de données fines ce refresh »
+    et la prévision retombe sur l'interpolation horaire, sans faire échouer le cycle."""
+    try:
+        return await _fetch_parsed(session, url, parse_minutely15)
+    except Exception:
+        return None
+
+
 def _overlay_cloud_spread(
     series: WeatherSeries, spread_times: list[datetime], spread_vals: list[float]
 ) -> WeatherSeries:
@@ -363,12 +429,14 @@ async def fetch_weather(
     series is returned with a zero spread rather than failing the whole refresh."""
     base_url = build_weather_url(lat, lon, past_days=past_days, forecast_days=forecast_days)
     ensemble_url = build_weather_url(lat, lon, past_days=past_days, forecast_days=forecast_days, ensemble=True)
+    m15_url = build_minutely15_url(lat, lon)
     # return_exceptions so a raised values call does not leave the ensemble call running with nobody
     # holding it: gather cancels nothing on the first failure, and that task is created here rather
     # than by the config entry, so unloading the entry would not reach it either.
-    series, spread = await asyncio.gather(
+    series, spread, fine = await asyncio.gather(
         _fetch_parsed(session, base_url, parse_weather),
         _ensemble_spread(session, ensemble_url),
+        _minutely15(session, m15_url),
         return_exceptions=True,
     )
     # Both are settled by now, so nothing is left running. The values call's failure is still the
@@ -377,6 +445,15 @@ async def fetch_weather(
         raise series
     if series is None:
         return None
+    if not isinstance(fine, BaseException) and fine is not None:
+        series = replace(
+            series,
+            m15_times=fine[0],
+            m15_shortwave=fine[1],
+            m15_direct=fine[2],
+            m15_diffuse=fine[3],
+            m15_cloud=fine[4],
+        )
     if isinstance(spread, BaseException) or spread is None:
         return series
     return _overlay_cloud_spread(series, spread[0], spread[1])
