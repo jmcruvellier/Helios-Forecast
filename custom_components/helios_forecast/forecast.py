@@ -127,6 +127,13 @@ def build_forecast_series(
     # describes the hour beginning on it, hence the hour of slack.
     limit = min(end, times[-1] + timedelta(hours=1))
 
+    # Lookup exact des échantillons 15 min (clés en secondes epoch ; les deux axes sont
+    # sur des quarts d'heure pleins). Vide quand l'appel best-effort n'a rien servi.
+    m15_by_s: Dict[int, int] = {}
+    if weather.m15_times:
+        for j, mt in enumerate(weather.m15_times):
+            m15_by_s[int(mt.timestamp())] = j
+
     wi = 0
     t = start
     while t < limit:
@@ -150,6 +157,26 @@ def build_forecast_series(
             wind=lerp_finite(_at(weather.wind, i0), _at(weather.wind, i1), f),
             snow=lerp_finite(_at(weather.snow, i0), _at(weather.snow, i1), f),
         )
+
+        # Les échantillons fins 15 min remplacent l'interpolation horaire quand ils existent à
+        # cet instant ; les champs absents du flux 15 min (temp, vent, neige) et les éventuels
+        # trous gardent la valeur interpolée de l'horaire. Au-delà de la fenêtre fine
+        # (2 jours), comportement inchangé.
+        j = m15_by_s.get(int(t_ms))
+        if j is not None:
+            ghi15 = _at(weather.m15_shortwave, j)
+            direct15 = _at(weather.m15_direct, j)
+            diffuse15 = _at(weather.m15_diffuse, j)
+            cloud15 = _at(weather.m15_cloud, j)
+            sample = WeatherSample(
+                cloud=cloud15 if cloud15 is not None else sample.cloud,
+                ghi=ghi15 if ghi15 is not None else sample.ghi,
+                direct=direct15 if direct15 is not None else sample.direct,
+                diffuse=diffuse15 if diffuse15 is not None else sample.diffuse,
+                temp=sample.temp,
+                wind=sample.wind,
+                snow=sample.snow,
+            )
 
         pcts = compute_pv_power_per_array(t, home_lat, home_lon, sample, layout)
         snow = snow_cover_factor(sample.snow, sample.temp)
