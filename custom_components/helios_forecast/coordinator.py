@@ -98,10 +98,11 @@ UPDATE_INTERVAL = timedelta(minutes=30)
 # a delay, so the most recently completed hours routinely carry no value yet, and an archive that
 # moved its high-water mark past them would skip them for good: a refresh with an older hour to write
 # leapfrogs the one that has not arrived. Re-offering costs nothing, the write is an upsert, and an
+# Extended forecast horizon from 7 to 15 days using ECMWF IFS HRES 9km endpoint.
 # hour that never arrives is given up at the end of this window rather than rescanning for ever.
 ARCHIVE_RETRY_HOURS = 6
 STEP_MINUTES = 15
-FORECAST_DAYS = 7
+FORECAST_DAYS = 15
 # How far ahead the battery SoC projection runs. Reaches past the FOLLOWING day's solar peak, so a
 # chart reading the projection past that point sees it recover rather than reading as stuck at the
 # reserve floor. The PV forecast itself already reaches FORECAST_DAYS ahead, so this only uses
@@ -266,6 +267,7 @@ class HeliosForecastCoordinator(DataUpdateCoordinator[ForecastData]):
         # answers whole UTC days while the horizon below runs on local midnights, so west of Greenwich
         # the last local day ends after the final UTC hour of a FORECAST_DAYS window; one day of slack
         # covers every offset, and build_forecast_series stops at the weather either way.
+        # Using ECMWF IFS HRES 9km for extended 15-day forecast horizon.
         try:
             weather = await fetch_weather(session, lat, lon, past_days=LEARN_DAYS, forecast_days=FORECAST_DAYS + 1)
             if weather is not None:

@@ -39,6 +39,14 @@ except ImportError:  # aiohttp is not installed in the pure-python test env; onl
 
 
 _BASE_URL = "https://api.open-meteo.com/v1/forecast"
+_ECMWF_URL = "https://api.open-meteo.com/v1/ecmwf"
+
+# ECMWF-specific hourly parameters (different naming from /v1/forecast)
+_ECMWF_HOURLY = (
+    "cloud_cover_low,cloud_cover_mid,cloud_cover_high,"
+    "shortwave_radiation,direct_radiation,diffuse_radiation,"
+    "temperature_2m,wind_speed_10m,snow_depth"
+)
 
 _T = TypeVar("_T")
 
@@ -65,7 +73,7 @@ WEATHER_SPREAD_HOURLY = "cloud_cover"
 # disagreement across these models. Open-Meteo suffixes each variable key with the model name. A broad,
 # global-ish set: models that do not cover the location return nulls and drop out of the spread.
 WEATHER_MODELS = (
-    "ecmwf_ifs025",
+    "ecmwf",
     "gfs_seamless",
     "icon_seamless",
     "gem_seamless",
@@ -108,7 +116,7 @@ def _encloses(outer: tuple, inner: tuple) -> bool:
 # independent global models, whose median beats either alone.
 def pick_models_for_location(lat: float, lon: float) -> list[str]:
     """Model set for the weather request: the most central regional model plus a global one, or two globals."""
-    GLOBAL = "ecmwf_ifs025"
+    GLOBAL = "ecmwf"
     inside = [box for box in _REGIONAL_MODELS if box[1] <= lat <= box[2] and box[3] <= lon <= box[4]]
     candidates = [box for box in inside if not any(_encloses(box, other) for other in inside)]
     best: str | None = None
@@ -151,7 +159,7 @@ class WeatherSeries:
 
 
 def build_weather_url(
-    lat: float, lon: float, *, past_days: int = 0, forecast_days: int = 7, ensemble: bool = False
+    lat: float, lon: float, *, past_days: int = 0, forecast_days: int = 15, ensemble: bool = False
 ) -> str:
     """URL for the weather (forecast inputs) request.
 
@@ -348,21 +356,56 @@ async def _ensemble_spread(session: ClientSession, url: str) -> Optional[tuple[l
         return None
 
 
+async def _fetch_ecmwf_weather(
+    session: ClientSession,
+    lat: float,
+    lon: float,
+    *,
+    past_days: int = 0,
+    forecast_days: int = 15,
+) -> WeatherSeries | None:
+    """Fetch ECMWF IFS HRES 9km data directly from /v1/ecmwf endpoint.
+    
+    This provides higher resolution (9km vs 25km) and longer forecast horizon (15 days vs 7).
+    Returns WeatherSeries with the same structure as the multi-model fetch.
+    """
+    url = (
+        f"{_ECMWF_URL}"
+        f"?latitude={lat:.4f}"
+        f"&longitude={lon:.4f}"
+        f"&hourly={_ECMWF_HOURLY}"
+        f"&models=ecmwf"
+        f"&past_days={past_days}&forecast_days={forecast_days}&timezone=UTC"
+    )
+    return await _fetch_parsed(session, url, parse_weather)
+
+
 async def fetch_weather(
     session: ClientSession,
     lat: float,
     lon: float,
     *,
     past_days: int = 0,
-    forecast_days: int = 7,
+    forecast_days: int = 15,
 ) -> WeatherSeries | None:
     """GET the weather inputs. The picker-median call carries the values (required); a second,
     best-effort ensemble call adds only the cross-model cloud spread. The two hit independent
     Open-Meteo endpoints and are fetched concurrently, so a slow or retried values call does not also
     serialize the ensemble call's own latency on top of it. If the ensemble call fails, the values
-    series is returned with a zero spread rather than failing the whole refresh."""
-    base_url = build_weather_url(lat, lon, past_days=past_days, forecast_days=forecast_days)
-    ensemble_url = build_weather_url(lat, lon, past_days=past_days, forecast_days=forecast_days, ensemble=True)
+    series is returned with a zero spread rather than failing the whole refresh.
+    
+    Now prioritizes ECMWF IFS HRES 9km endpoint for better resolution and longer forecast horizon.
+    Falls back to multi-model approach if ECMWF 9km is unavailable.
+    """
+    # Try ECMWF IFS HRES 9km first for better resolution and longer forecast
+    ecmwf_series = await _fetch_ecmwf_weather(session, lat, lon, past_days=past_days, forecast_days=forecast_days)
+    if ecmwf_series is not None:
+        # ECMWF 9km succeeded, use it (no ensemble spread for single-model response)
+        return ecmwf_series
+    
+    # Fallback to multi-model approach for compatibility
+    base_url = build_weather_url(lat, lon, past_days=past_days, forecast_days=min(forecast_days, 7))
+    ensemble_url = build_weather_url(lat, lon, past_days=past_days, forecast_days=min(forecast_days, 7), ensemble=True)
     # return_exceptions so a raised values call does not leave the ensemble call running with nobody
     # holding it: gather cancels nothing on the first failure, and that task is created here rather
     # than by the config entry, so unloading the entry would not reach it either.
