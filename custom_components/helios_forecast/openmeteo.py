@@ -385,7 +385,6 @@ async def _fetch_ecmwf_weather(
         f"?latitude={lat:.4f}"
         f"&longitude={lon:.4f}"
         f"&hourly={_ECMWF_HOURLY}"
-        f"&models=ecmwf"
         f"&past_days={past_days}&forecast_days={forecast_days}&timezone=UTC"
     )
     return await _fetch_parsed(session, url, parse_weather)
