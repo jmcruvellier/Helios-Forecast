@@ -374,18 +374,20 @@ async def _fetch_ecmwf_weather(
     *,
     past_days: int = 0,
     forecast_days: int = 15,
+    timezone: str = "UTC",
 ) -> WeatherSeries | None:
     """Fetch ECMWF IFS HRES 9km data directly from /v1/ecmwf endpoint.
     
     This provides higher resolution (9km vs 25km) and longer forecast horizon (15 days vs 7).
     Returns WeatherSeries with the same structure as the multi-model fetch.
+    Uses the provided timezone for proper local time alignment with Windy.
     """
     url = (
         f"{_ECMWF_URL}"
         f"?latitude={lat:.4f}"
         f"&longitude={lon:.4f}"
         f"&hourly={_ECMWF_HOURLY}"
-        f"&past_days={past_days}&forecast_days={forecast_days}&timezone=UTC"
+        f"&past_days={past_days}&forecast_days={forecast_days}&timezone={timezone}"
     )
     return await _fetch_parsed(session, url, parse_weather)
 
@@ -397,6 +399,7 @@ async def fetch_weather(
     *,
     past_days: int = 0,
     forecast_days: int = 15,
+    timezone: str = "UTC",
 ) -> WeatherSeries | None:
     """GET the weather inputs. The picker-median call carries the values (required); a second,
     best-effort ensemble call adds only the cross-model cloud spread. The two hit independent
@@ -408,7 +411,7 @@ async def fetch_weather(
     Falls back to multi-model approach if ECMWF 9km is unavailable.
     """
     # Try ECMWF IFS HRES 9km first for better resolution and longer forecast
-    ecmwf_series = await _fetch_ecmwf_weather(session, lat, lon, past_days=past_days, forecast_days=forecast_days)
+    ecmwf_series = await _fetch_ecmwf_weather(session, lat, lon, past_days=past_days, forecast_days=forecast_days, timezone=timezone)
     if ecmwf_series is not None:
         # ECMWF 9km succeeded, use it (no ensemble spread for single-model response)
         return ecmwf_series
