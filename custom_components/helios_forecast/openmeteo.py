@@ -243,7 +243,9 @@ def cloud_effective(low: Optional[float], mid: Optional[float], high: Optional[f
 def parse_weather(payload: dict[str, Any]) -> WeatherSeries | None:
     """Build a WeatherSeries from an Open-Meteo payload, fusing the picker models to the per-hour
     median and the three cloud layers into one weighted cover. Returns None when there are no
-    timestamps or no cloud layers. Works for a single-model response too (median of one = the value)."""
+    timestamps or no cloud layers. Works for a single-model response too (median of one = the value).
+    
+    Handles both /v1/forecast (with _instant suffix) and /v1/ecmwf (without _instant) parameter names."""
     hourly = payload.get("hourly") or {}
     time_strs = hourly.get("time") or []
     low_arrays = _model_arrays(hourly, "cloud_cover_low")
@@ -251,8 +253,17 @@ def parse_weather(payload: dict[str, Any]) -> WeatherSeries | None:
         return None
     n = len(time_strs)
 
+    def get_key(base: str) -> str:
+        """Get the actual key name, handling both _instant and non-_instant variants."""
+        if base in hourly:
+            return base
+        instant_base = f"{base}_instant"
+        if instant_base in hourly:
+            return instant_base
+        return base
+
     def fuse(base: str) -> list:
-        arrays = _model_arrays(hourly, base)
+        arrays = _model_arrays(hourly, get_key(base))
         return [_median(_finite_at(arrays, i)) for i in range(n)]
 
     # Median each layer across models first, then combine into the weighted cover.
@@ -263,9 +274,9 @@ def parse_weather(payload: dict[str, Any]) -> WeatherSeries | None:
     return WeatherSeries(
         times=parse_times(time_strs),
         cloud=cloud,
-        shortwave=fuse("shortwave_radiation_instant"),
-        direct=fuse("direct_radiation_instant"),
-        diffuse=fuse("diffuse_radiation_instant"),
+        shortwave=fuse("shortwave_radiation"),
+        direct=fuse("direct_radiation"),
+        diffuse=fuse("diffuse_radiation"),
         temp=fuse("temperature_2m"),
         wind=fuse("wind_speed_10m"),
         snow=fuse("snow_depth"),
