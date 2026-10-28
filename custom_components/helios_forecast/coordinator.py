@@ -268,8 +268,16 @@ class HeliosForecastCoordinator(DataUpdateCoordinator[ForecastData]):
         # the last local day ends after the final UTC hour of a FORECAST_DAYS window; one day of slack
         # covers every offset, and build_forecast_series stops at the weather either way.
         # Using ECMWF IFS HRES 9km for extended 15-day forecast horizon.
+        # Use local timezone for proper alignment with Windy and user expectations.
         try:
-            weather = await fetch_weather(session, lat, lon, past_days=LEARN_DAYS, forecast_days=FORECAST_DAYS + 1)
+            weather = await fetch_weather(
+                session,
+                lat,
+                lon,
+                past_days=LEARN_DAYS,
+                forecast_days=FORECAST_DAYS + 1,
+                timezone=self.hass.config.time_zone,
+            )
             if weather is not None:
                 self._weather_fetched_at = dt_util.utcnow()
             # A transient empty response should not blank the forecast: reuse the last good fetch so
