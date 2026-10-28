@@ -41,6 +41,13 @@ except ImportError:  # aiohttp is not installed in the pure-python test env; onl
 _BASE_URL = "https://api.open-meteo.com/v1/forecast"
 _ECMWF_URL = "https://api.open-meteo.com/v1/ecmwf"
 
+# ECMWF-specific hourly parameters (different naming from /v1/forecast)
+_ECMWF_HOURLY = (
+    "cloud_cover_low,cloud_cover_mid,cloud_cover_high,"
+    "shortwave_radiation,direct_radiation,diffuse_radiation,"
+    "temperature_2m,wind_speed_10m,snow_depth"
+)
+
 _T = TypeVar("_T")
 
 # Open-Meteo occasionally answers a valid request with a non-200 or an empty payload (a brief
@@ -366,7 +373,7 @@ async def _fetch_ecmwf_weather(
         f"{_ECMWF_URL}"
         f"?latitude={lat:.4f}"
         f"&longitude={lon:.4f}"
-        f"&hourly={WEATHER_HOURLY}"
+        f"&hourly={_ECMWF_HOURLY}"
         f"&models=ecmwf"
         f"&past_days={past_days}&forecast_days={forecast_days}&timezone=UTC"
     )
